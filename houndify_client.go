@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
-	"github.com/pkg/errors"
 	"io"
 	"io/ioutil"
 	"net/http"
@@ -12,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/pkg/errors"
 )
 
 const houndifyVoiceURL = "https://api.houndify.com:443/v1/audio"
@@ -255,7 +256,12 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 	defer resp.Body.Close()
 
 	//don't try to parse out conversation state from a bad response
+	fmt.Println("Billy Test... resp.StatusCode: ", resp.StatusCode)
 	if resp.StatusCode >= 400 {
+		fmt.Println("resp.statusCode: ", resp.StatusCode)
+		if resp.StatusCode == 401 {
+			return bodyStr, errors.New("unauthorized")
+		}
 		return bodyStr, errors.New("error response")
 	}
 	// update with new conversation state
