@@ -256,13 +256,14 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 	defer resp.Body.Close()
 
 	//don't try to parse out conversation state from a bad response
-	fmt.Println("Billy Test... resp.StatusCode: ", resp.StatusCode)
 	if resp.StatusCode >= 400 {
-		fmt.Println("resp.statusCode: ", resp.StatusCode)
-		if resp.StatusCode == 401 {
+		switch resp.StatusCode {
+		case http.StatusUnauthorized:
+		case http.StatusForbidden:
 			return bodyStr, errors.New("unauthorized")
+		default:
+			return bodyStr, errors.New("error response")
 		}
-		return bodyStr, errors.New("error response")
 	}
 	// update with new conversation state
 	if c.enableConversationState {
