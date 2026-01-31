@@ -2,6 +2,8 @@ package houndify
 
 import (
 	"bufio"
+	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -52,6 +54,38 @@ type (
 		SafeToStopAudio   *bool  `json:"SafeToStopAudio"`
 	}
 )
+
+// decompressResponseIfNeeded checks if the response has the Hound-Response-Content-Encoding: gzip header
+// and decompresses the body if needed. Returns the decompressed data or original data if not compressed.
+func decompressResponseIfNeeded(body []byte, header http.Header, verbose bool) ([]byte, error) {
+	if header.Get("Hound-Response-Content-Encoding") != "gzip" {
+		return body, nil
+	}
+
+	decompressStart := time.Now()
+
+	gzipReader, err := gzip.NewReader(bytes.NewReader(body))
+	if err != nil {
+		return nil, errors.Wrap(err, "creating gzip reader")
+	}
+	defer gzipReader.Close()
+
+	decompressed, err := io.ReadAll(gzipReader)
+	if err != nil {
+		return nil, errors.Wrap(err, "decompressing gzip response")
+	}
+
+	if verbose {
+		decompressDuration := time.Since(decompressStart)
+		originalSize := len(body)
+		decompressedSize := len(decompressed)
+		compressionRatio := float64(originalSize) / float64(decompressedSize) * 100
+		fmt.Printf("Decompressed gzipped response: originalSize=%d, decompressedSize=%d, compressionRatio=%.1f%%, decompressionLatencyMs=%d\n",
+			originalSize, decompressedSize, compressionRatio, decompressDuration.Milliseconds())
+	}
+
+	return decompressed, nil
+}
 
 // EnableConversationState enables conversation state for future queries
 func (c *Client) EnableConversationState() {
@@ -115,6 +149,12 @@ func (c *Client) TextSearch(textReq TextRequest) (string, error) {
 		return "", errors.New("failed to read body: " + err.Error())
 	}
 	defer resp.Body.Close()
+
+	// Decompress response if server sent compressed data
+	body, err = decompressResponseIfNeeded(body, resp.Header, c.Verbose)
+	if err != nil {
+		return "", err
+	}
 
 	bodyStr := string(body)
 
@@ -251,6 +291,14 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 			break
 		}
 	}
+
+	// Decompress response if server sent compressed data
+	responseBytes := []byte(line)
+	responseBytes, err = decompressResponseIfNeeded(responseBytes, resp.Header, c.Verbose)
+	if err != nil {
+		return "", err
+	}
+	line = string(responseBytes)
 
 	bodyStr := line
 	defer resp.Body.Close()

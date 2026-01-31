@@ -22,6 +22,9 @@ type TextRequest struct {
 	RequestInfoFields map[string]interface{}
 	URL               string
 
+	// EnableCompression requests gzip compression of the response from the server
+	EnableCompression bool
+
 	// Extra header that should be added to http request
 	headers map[string]string
 
@@ -39,6 +42,9 @@ type VoiceRequest struct {
 	RequestID         string
 	RequestInfoFields map[string]interface{}
 	URL               string
+
+	// EnableCompression requests gzip compression of the response from the server
+	EnableCompression bool
 
 	// Extra header that should be added to http request
 	headers map[string]string
@@ -83,6 +89,18 @@ func BuildRequest(houndReq requestable, c Client) (*http.Request, error) {
 	}
 	req.Header.Set("Hound-Request-Authentication", auth.houndRequestAuth)
 	req.Header.Set("Hound-Client-Authentication", auth.houndClientAuth)
+
+	// Enable compression if requested
+	switch r := houndReq.(type) {
+	case *TextRequest:
+		if r.EnableCompression {
+			req.Header.Set("Hound-Response-Accept-Encoding", "gzip")
+		}
+	case *VoiceRequest:
+		if r.EnableCompression {
+			req.Header.Set("Hound-Response-Accept-Encoding", "gzip")
+		}
+	}
 
 	//
 	reqInfo := houndReq.GetRequestInfo()

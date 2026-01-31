@@ -2,11 +2,12 @@ package houndify_test
 
 import (
 	"bytes"
-	. "github.com/soundhound/houndify-sdk-go"
-	"gotest.tools/assert"
 	"io/ioutil"
 	"net/http"
 	"testing"
+
+	. "github.com/soundhound/houndify-sdk-go"
+	"gotest.tools/assert"
 )
 
 type RoundTripFunc func(req *http.Request) *http.Response
@@ -124,6 +125,43 @@ func TestBuildTextRequest(t *testing.T) {
 	textReq := NewTestTextRequest()
 	houndifyClient := NewTestHoundifyClient(mockClient)
 	req, err := BuildRequest(&textReq, houndifyClient)
+	assert.NilError(t, err)
+	mockClient.Do(req)
+}
+// Tests BuildRequest with compression enabled for TextRequest
+func TestBuildTextRequestWithCompression(t *testing.T) {
+
+	mockClient := NewTestClient(func(req *http.Request) *http.Response {
+		assert.Equal(t, req.Method, "POST")
+		assert.Equal(t, req.URL.String(), "http://test.com/v1/text?query=what%20is%20the%20time")
+		assert.Equal(t, req.Header.Get("Hound-Response-Accept-Encoding"), "gzip")
+
+		return &http.Response{}
+	})
+
+	textReq := NewTestTextRequest()
+	textReq.EnableCompression = true
+	houndifyClient := NewTestHoundifyClient(mockClient)
+	req, err := BuildRequest(&textReq, houndifyClient)
+	assert.NilError(t, err)
+	mockClient.Do(req)
+}
+
+// Tests BuildRequest with compression enabled for VoiceRequest
+func TestBuildVoiceRequestWithCompression(t *testing.T) {
+
+	mockClient := NewTestClient(func(req *http.Request) *http.Response {
+		assert.Equal(t, req.Method, "POST")
+		assert.Equal(t, req.URL.String(), "http://test.com/v1/voice")
+		assert.Equal(t, req.Header.Get("Hound-Response-Accept-Encoding"), "gzip")
+
+		return &http.Response{}
+	})
+
+	voiceReq := NewTestVoiceRequest()
+	voiceReq.EnableCompression = true
+	houndifyClient := NewTestHoundifyClient(mockClient)
+	req, err := BuildRequest(&voiceReq, houndifyClient)
 	assert.NilError(t, err)
 	mockClient.Do(req)
 }
