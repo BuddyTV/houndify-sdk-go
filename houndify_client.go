@@ -62,6 +62,13 @@ func decompressResponseIfNeeded(body []byte, header http.Header, verbose bool) (
 		return body, nil
 	}
 
+	// Verify gzip magic number (0x1f 0x8b) as a sanity check
+	if len(body) < 2 || body[0] != 0x1f || body[1] != 0x8b {
+		fmt.Println("response is not gzip")
+		// Header says gzip but data doesn't look like gzip, return as-is
+		return body, nil
+	}
+
 	decompressStart := time.Now()
 
 	gzipReader, err := gzip.NewReader(bytes.NewReader(body))
