@@ -229,3 +229,8 @@ func (r *VoiceRequest) WithContext(ctx context.Context) {
 func (r *VoiceRequest) Headers(headers map[string]string) {
 	r.headers = headers
 }
+
+func (r *VoiceRequest) serverDeterminesEndOfAudio() bool {
+	serverEoa, ok := r.RequestInfoFields["ServerDeterminesEndOfAudio"].(bool)
+	return ok && serverEoa
+}

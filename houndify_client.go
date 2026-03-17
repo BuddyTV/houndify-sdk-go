@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pkg/errors"
@@ -87,6 +88,9 @@ func (c *Client) SetConversationState(newState interface{}) {
 func (c *Client) TextSearch(textReq TextRequest) (string, error) {
 
 	req, err := BuildRequest(&textReq, *c)
+	if err != nil {
+		return "", err
+	}
 
 	// Add the TexRequest's context to the http request
 	if textReq.ctx != nil {
@@ -96,10 +100,6 @@ func (c *Client) TextSearch(textReq TextRequest) (string, error) {
 	// Set the extra client headers
 	for k, v := range textReq.headers {
 		req.Header.Set(k, v)
-	}
-
-	if err != nil {
-		return "", err
 	}
 
 	if c.HttpClient == nil {
@@ -167,6 +167,10 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 	// has to go into the body
 	c.RequestInfoInBody = false
 	req, err := BuildRequest(&voiceReq, *c)
+	if err != nil {
+		return "", err
+	}
+
 	if voiceReq.ctx != nil {
 		req = req.WithContext(voiceReq.ctx)
 	}
@@ -176,10 +180,8 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 		req.Header.Set(k, v)
 	}
 
-	if err != nil {
-		return "", err
-	}
-	req.Body = ioutil.NopCloser(voiceReq.AudioStream)
+	bodyReader := newAbortableReader(voiceReq.AudioStream)
+	req.Body = bodyReader
 
 	if c.HttpClient == nil {
 		c.HttpClient = &http.Client{}
@@ -228,6 +230,12 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 			continue
 		}
 		if incoming.Format == "HoundVoiceQueryPartialTranscript" || incoming.Format == "SoundHoundVoiceSearchParialTranscript" {
+			// Server says it has enough audio - stop the request body immediately
+			// to prevent writes on a connection the server is about to close.
+			if voiceReq.serverDeterminesEndOfAudio() && *incoming.SafeToStopAudio {
+				bodyReader.Abort()
+			}
+
 			// convert from houndify server's struct to SDK's simplified struct
 			partialDuration, err := time.ParseDuration(fmt.Sprintf("%d", incoming.DurationMS) + "ms")
 			if err != nil {
@@ -248,6 +256,9 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 		}
 		if incoming.Format == "SoundHoundVoiceSearchResult" {
 			//this line is the final response, done with partial transcripts
+			if voiceReq.serverDeterminesEndOfAudio() {
+				bodyReader.Abort()
+			}
 			break
 		}
 	}
@@ -259,6 +270,7 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 	if resp.StatusCode >= 400 {
 		switch resp.StatusCode {
 		case http.StatusUnauthorized:
+			fallthrough
 		case http.StatusForbidden:
 			return bodyStr, errors.New("unauthorized")
 		default:
@@ -275,4 +287,38 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 	}
 
 	return bodyStr, nil
+}
+
+// abortableReader wraps an io.Reader so that Read() can be cut short.
+// Calling Abort() causes all subsequent Read() calls to return io.EOF,
+// signaling the HTTP transport to stop writing the request body.
+type abortableReader struct {
+	reader io.Reader
+	done   atomic.Bool
+}
+
+func newAbortableReader(r io.Reader) *abortableReader {
+	return &abortableReader{
+		reader: r,
+	}
+}
+
+func (a *abortableReader) Read(p []byte) (int, error) {
+	if a.done.Load() {
+		return 0, io.EOF
+	}
+	n, err := a.reader.Read(p)
+	if a.done.Load() {
+		return 0, io.EOF
+	}
+	return n, err
+}
+
+func (a *abortableReader) Close() error {
+	a.Abort()
+	return nil
+}
+
+func (a *abortableReader) Abort() {
+	a.done.Store(true)
 }
