@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -151,17 +150,7 @@ func (c *Client) TextSearch(textReq TextRequest) (string, error) {
 // connect, failure to parse the response, or failure to update the conversation
 // state (if applicable).
 func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan PartialTranscript) (string, error) {
-
-	//so the partial transcript channel doesn't get closed before all transcripts are sent
-	partialChanWait := sync.WaitGroup{}
-
-	defer func() {
-		go func() {
-			//don't close the open partial transcript channel
-			partialChanWait.Wait()
-			close(partialTranscriptChan)
-		}()
-	}()
+	partialsTxChan := make(chan PartialTranscript, 10)
 
 	// Ensure that RequestInfoInBody isn't set for VoiceRequests because the Audio stream
 	// has to go into the body
@@ -199,6 +188,12 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 	}
 
 	// partial transcript parsing
+	go func() {
+		for partial := range partialsTxChan {
+			partialTranscriptChan <- partial
+		}
+		close(partialTranscriptChan)
+	}()
 
 	reader := bufio.NewReader(resp.Body)
 	var line string
@@ -242,16 +237,14 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 				fmt.Println("failed reading the time in partial transcript")
 				continue
 			}
-			partialChanWait.Add(1)
-			go func() {
-				partialTranscriptChan <- PartialTranscript{
-					Message:         incoming.PartialTranscript,
-					Duration:        partialDuration,
-					Done:            incoming.Done,
-					SafeToStopAudio: incoming.SafeToStopAudio,
-				}
-				partialChanWait.Done()
-			}()
+
+			partialsTxChan <- PartialTranscript{
+				Message:         incoming.PartialTranscript,
+				Duration:        partialDuration,
+				Done:            incoming.Done,
+				SafeToStopAudio: incoming.SafeToStopAudio,
+			}
+
 			continue
 		}
 		if incoming.Format == "SoundHoundVoiceSearchResult" {
@@ -262,6 +255,8 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 			break
 		}
 	}
+
+	close(partialsTxChan)
 
 	bodyStr := line
 	defer resp.Body.Close()
