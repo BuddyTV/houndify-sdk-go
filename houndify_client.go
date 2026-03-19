@@ -183,6 +183,7 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 	if err != nil {
 		return "", errors.New("failed to successfully run request: " + err.Error())
 	}
+	defer resp.Body.Close()
 
 	if c.Verbose {
 		fmt.Println(resp.Proto, resp.StatusCode)
@@ -206,6 +207,7 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 		}
 		close(partialTranscriptChan)
 	}()
+	defer close(partialsTxChan)
 
 	// partial transcript parsing
 	reader := bufio.NewReader(resp.Body)
@@ -240,7 +242,7 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 		if incoming.Format == "HoundVoiceQueryPartialTranscript" || incoming.Format == "SoundHoundVoiceSearchParialTranscript" {
 			// Server says it has enough audio - stop the request body immediately
 			// to prevent writes on a connection the server is about to close.
-			if *incoming.SafeToStopAudio && voiceReq.serverDeterminesEndOfAudio() {
+			if incoming.SafeToStopAudio != nil && *incoming.SafeToStopAudio && voiceReq.serverDeterminesEndOfAudio() {
 				bodyReader.Abort()
 			}
 
@@ -269,10 +271,7 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 		}
 	}
 
-	close(partialsTxChan)
-
 	bodyStr := line
-	defer resp.Body.Close()
 
 	//don't try to parse out conversation state from a bad response
 	if resp.StatusCode >= 400 {
