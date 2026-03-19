@@ -152,6 +152,15 @@ func (c *Client) TextSearch(textReq TextRequest) (string, error) {
 // state (if applicable).
 func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan PartialTranscript) (string, error) {
 	partialsTxChan := make(chan PartialTranscript, 10)
+	defer close(partialsTxChan)
+
+	// send partials to partialTranscriptChan and close when finished
+	go func() {
+		defer close(partialTranscriptChan)
+		for partial := range partialsTxChan {
+			partialTranscriptChan <- partial
+		}
+	}()
 
 	// Ensure that RequestInfoInBody isn't set for VoiceRequests because the Audio stream
 	// has to go into the body
@@ -199,15 +208,6 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 			}
 		}
 	}
-
-	// send partials to partialTranscriptChan and close when finished
-	go func() {
-		for partial := range partialsTxChan {
-			partialTranscriptChan <- partial
-		}
-		close(partialTranscriptChan)
-	}()
-	defer close(partialsTxChan)
 
 	// partial transcript parsing
 	reader := bufio.NewReader(resp.Body)

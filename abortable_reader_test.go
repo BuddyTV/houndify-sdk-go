@@ -3,9 +3,7 @@ package houndify_test
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"strings"
 	"sync"
@@ -72,10 +70,6 @@ func buildFinalResponseLine() string {
 // TestVoiceSearch_AbortOnSafeToStopAudio verifies that when the server sends
 // SafeToStopAudio==true, the SDK stops reading from the audio stream promptly,
 // preventing writes to a connection the server is about to close.
-//
-// Without the abortableReader fix, the HTTP transport would continue reading
-// from the audio stream indefinitely, and if the server closed the connection
-// the transport's write would hit a RST → "connection reset by peer".
 func TestVoiceSearch_AbortOnSafeToStopAudio(t *testing.T) {
 	audio := &slowReader{delay: 50 * time.Millisecond}
 
@@ -96,7 +90,7 @@ func TestVoiceSearch_AbortOnSafeToStopAudio(t *testing.T) {
 		req.Body.Read(buf)
 		return &http.Response{
 			StatusCode: 200,
-			Body:       ioutil.NopCloser(bytes.NewBufferString(responseBody)),
+			Body:       io.NopCloser(bytes.NewBufferString(responseBody)),
 			Header:     make(http.Header),
 		}
 	})
@@ -150,9 +144,7 @@ func TestVoiceSearch_AbortOnSafeToStopAudio(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	countAfterWait := audio.getReadCount()
 
-	assert.Equal(t, countAfterSearch, countAfterWait,
-		fmt.Sprintf("audio reader was still being read after VoiceSearch returned: reads went from %d to %d",
-			countAfterSearch, countAfterWait))
+	assert.Equal(t, countAfterSearch, countAfterWait, "audio reader was still being read after VoiceSearch returned")
 }
 
 // TestVoiceSearch_NoAbortWithoutServerDeterminesEndOfAudio verifies that when
@@ -173,7 +165,7 @@ func TestVoiceSearch_NoAbortWithoutServerDeterminesEndOfAudio(t *testing.T) {
 		bodyBytes, _ = io.ReadAll(req.Body)
 		return &http.Response{
 			StatusCode: 200,
-			Body:       ioutil.NopCloser(bytes.NewBufferString(responseBody)),
+			Body:       io.NopCloser(bytes.NewBufferString(responseBody)),
 			Header:     make(http.Header),
 		}
 	})
@@ -203,6 +195,5 @@ func TestVoiceSearch_NoAbortWithoutServerDeterminesEndOfAudio(t *testing.T) {
 	assert.Assert(t, result != "", "expected non-empty response body")
 
 	// All audio bytes should have been sent (not aborted early)
-	assert.Equal(t, len(bodyBytes), len(audioData),
-		"expected all audio data to be sent when ServerDeterminesEndOfAudio is not set")
+	assert.Equal(t, len(bodyBytes), len(audioData), "expected all audio data to be sent when ServerDeterminesEndOfAudio is not set")
 }
