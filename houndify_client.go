@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"strconv"
 	"strings"
@@ -109,7 +108,7 @@ func (c *Client) TextSearch(textReq TextRequest) (string, error) {
 		return "", errors.New("failed to successfully run request: " + err.Error())
 	}
 
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", errors.New("failed to read body: " + err.Error())
 	}
@@ -171,6 +170,7 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 
 	bodyReader := newAbortableReader(voiceReq.AudioStream)
 	req.Body = bodyReader
+	defer bodyReader.Abort()
 
 	if c.HttpClient == nil {
 		c.HttpClient = &http.Client{}
@@ -187,7 +187,7 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 		fmt.Println("Headers: ", resp.Header)
 	}
 
-	// partial transcript parsing
+	// send partials to partialTranscriptChan and close when finished
 	go func() {
 		for partial := range partialsTxChan {
 			partialTranscriptChan <- partial
@@ -195,6 +195,7 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 		close(partialTranscriptChan)
 	}()
 
+	// partial transcript parsing
 	reader := bufio.NewReader(resp.Body)
 	var line string
 	for {
@@ -227,7 +228,7 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 		if incoming.Format == "HoundVoiceQueryPartialTranscript" || incoming.Format == "SoundHoundVoiceSearchParialTranscript" {
 			// Server says it has enough audio - stop the request body immediately
 			// to prevent writes on a connection the server is about to close.
-			if voiceReq.serverDeterminesEndOfAudio() && *incoming.SafeToStopAudio {
+			if *incoming.SafeToStopAudio && voiceReq.serverDeterminesEndOfAudio() {
 				bodyReader.Abort()
 			}
 
