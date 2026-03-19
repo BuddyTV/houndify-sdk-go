@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -187,6 +189,16 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 		fmt.Println("Headers: ", resp.Header)
 	}
 
+	// Debug: optionally jitter response reads to widen race window
+	if jitterStr := os.Getenv("DEBUG_RESPONSE_JITTER_MS"); jitterStr != "" {
+		if ms, err := strconv.Atoi(jitterStr); err == nil && ms > 0 {
+			resp.Body = &jitterReader{
+				reader:    resp.Body,
+				maxJitter: time.Duration(ms) * time.Millisecond,
+			}
+		}
+	}
+
 	// send partials to partialTranscriptChan and close when finished
 	go func() {
 		for partial := range partialsTxChan {
@@ -317,4 +329,20 @@ func (a *abortableReader) Close() error {
 
 func (a *abortableReader) Abort() {
 	a.done.Store(true)
+}
+
+// jitterReader wraps an io.ReadCloser and adds a random sleep before each Read,
+// used only for debugging to widen race windows.
+type jitterReader struct {
+	reader    io.ReadCloser
+	maxJitter time.Duration
+}
+
+func (j *jitterReader) Read(p []byte) (int, error) {
+	time.Sleep(time.Duration(rand.Int63n(int64(j.maxJitter))))
+	return j.reader.Read(p)
+}
+
+func (j *jitterReader) Close() error {
+	return j.reader.Close()
 }
