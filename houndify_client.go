@@ -199,15 +199,18 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 		fmt.Println("Headers: ", resp.Header)
 	}
 
+	var jReader jitterReader
+
 	// Debug: optionally jitter response reads to widen race window
 	if jitterStr := os.Getenv("DEBUG_RESPONSE_JITTER_MS"); jitterStr != "" {
 		if ms, err := strconv.Atoi(jitterStr); err == nil && ms > 0 {
-			resp.Body = &jitterReader{
+			jReader := &jitterReader{
 				reader:     resp.Body,
 				maxJitter:  time.Duration(ms) * time.Millisecond,
 				bodyReader: bodyReader,
 				voiceReq:   &voiceReq,
 			}
+			resp.Body = jReader
 		}
 	}
 
@@ -241,6 +244,12 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 			fmt.Println("fail reading hound server message")
 			continue
 		}
+
+		// --- DEBUG ---
+		// Call hook to set reader delay and/or abort
+		jReader.updateState(&incoming) // essentially a hook/copy to allow normal Abort() call but retain sleep
+		// -------------
+
 		if incoming.Format == "HoundVoiceQueryPartialTranscript" || incoming.Format == "SoundHoundVoiceSearchParialTranscript" {
 			// Server says it has enough audio - stop the request body immediately
 			// to prevent writes on a connection the server is about to close.
@@ -339,13 +348,13 @@ type jitterReader struct {
 	maxJitter  time.Duration
 	bodyReader *abortableReader
 	voiceReq   *VoiceRequest
+	sts        *atomic.Bool
 }
 
 func (j *jitterReader) Read(p []byte) (int, error) {
 	n, err := j.reader.Read(p)
-	sts := j.preprocessLine(p) // essentially a hook/copy to allow normal Abort() call but retain sleep
 
-	if sts {
+	if j.sts.Load() {
 		jitter := rand.Int63n(int64(j.maxJitter))
 		fmt.Printf("-- DEBUG -- Adding artificial delay before processing STS partial response..  jitter=%d, maxJitter=%s\n", jitter, j.maxJitter)
 		time.Sleep(time.Duration(jitter))
@@ -360,37 +369,17 @@ func (j *jitterReader) Read(p []byte) (int, error) {
 // To keep the real code above untouched, this func duplicates the same logic to determine
 // when to call Abort(), but the read delay is maintained as to allow the same race window
 // in the real response read loop
-func (j *jitterReader) preprocessLine(bytes []byte) (sts bool) {
-	sts = false
-	if len(bytes) == 0 {
-		return
-	}
-
-	line := strings.TrimSpace(string(bytes))
-	if line == "" {
-		return
-	}
-	fmt.Println(line)
-	if _, convertErr := strconv.Atoi(line); convertErr == nil {
-		// this is an integer, so one of the ObjectByteCountPrefixes, skip it
-		return
-	}
-	// attempt to parse incoming json into partial transcript
-	incoming := houndServerPartialTranscript{}
-	if err := json.Unmarshal([]byte(line), &incoming); err != nil {
-		return
-	}
-	fmt.Println("-- DEBUG -- preprocessLine eval")
+func (j *jitterReader) updateState(incoming *houndServerPartialTranscript) {
+	fmt.Println("-- DEBUG -- updateState eval")
 	if incoming.Format == "HoundVoiceQueryPartialTranscript" || incoming.Format == "SoundHoundVoiceSearchParialTranscript" {
 		// Server says it has enough audio - stop the request body immediately
 		// to prevent writes on a connection the server is about to close.
 		if incoming.SafeToStopAudio != nil && *incoming.SafeToStopAudio && j.voiceReq.serverDeterminesEndOfAudio() {
 			j.bodyReader.Abort()
 			fmt.Println("-- DEBUG -- AudioReader aborted!")
-			sts = true
+			j.sts.Store(true)
 		}
 	}
-	return
 }
 
 func (j *jitterReader) Close() error {
