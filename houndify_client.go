@@ -205,14 +205,14 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 	// Debug: optionally jitter response reads to widen race window
 	if jitterStr := os.Getenv("DEBUG_RESPONSE_JITTER_MS"); jitterStr != "" {
 		if ms, err := strconv.Atoi(jitterStr); err == nil && ms > 0 {
-			jReader := &jitterReader{
+			jReader = jitterReader{
 				reader:     resp.Body,
 				maxJitter:  time.Duration(ms) * time.Millisecond,
 				bodyReader: bodyReader,
 				voiceReq:   &voiceReq,
 				sts:        &atomic.Bool{},
 			}
-			resp.Body = jReader
+			resp.Body = &jReader
 		}
 	}
 
