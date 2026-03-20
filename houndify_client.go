@@ -151,7 +151,8 @@ func (c *Client) TextSearch(textReq TextRequest) (string, error) {
 // connect, failure to parse the response, or failure to update the conversation
 // state (if applicable).
 func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan PartialTranscript) (string, error) {
-	fmt.Println("-- DEBUG jitter -- 1 --")
+	vad := voiceReq.serverDeterminesEndOfAudio()
+	fmt.Printf("[houndify-sdk] VoiceSearch starting requestId=%s holdEOF=%v (VAD=%v)\n", voiceReq.RequestID, vad, vad)
 	partialsTxChan := make(chan PartialTranscript, 10)
 	defer close(partialsTxChan)
 
@@ -180,7 +181,7 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 		req.Header.Set(k, v)
 	}
 
-	bodyReader := newAbortableReader(voiceReq.AudioStream, voiceReq.serverDeterminesEndOfAudio())
+	bodyReader := newAbortableReader(voiceReq.AudioStream, vad)
 	req.Body = bodyReader
 	defer bodyReader.ReleaseEOF()
 
@@ -227,10 +228,11 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 		}
 		if err != nil {
 			if err != io.EOF {
-				fmt.Println(err)
+				fmt.Printf("[houndify-sdk] response read error requestId=%s err=%v\n", voiceReq.RequestID, err)
 				return "", errors.New("error reading Houndify server response")
 			}
 			//EOF means this line must be the final response, done with partial transcripts
+			fmt.Printf("[houndify-sdk] response EOF requestId=%s\n", voiceReq.RequestID)
 			break
 		}
 		if line == "" {
@@ -249,6 +251,7 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 
 		if incoming.Format == "HoundVoiceQueryPartialTranscript" || incoming.Format == "SoundHoundVoiceSearchParialTranscript" {
 			if incoming.SafeToStopAudio != nil && *incoming.SafeToStopAudio {
+				fmt.Printf("[houndify-sdk] SafeToStopAudio received requestId=%s\n", voiceReq.RequestID)
 				bodyReader.MarkSafeToStop()
 			}
 
@@ -270,12 +273,14 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 		}
 		if incoming.Format == "SoundHoundVoiceSearchResult" {
 			//this line is the final response, done with partial transcripts
+			fmt.Printf("[houndify-sdk] final response received requestId=%s\n", voiceReq.RequestID)
 			break
 		}
 	}
 
 	// Response fully consumed — release the held EOF so the writeLoop
 	// can send the chunk terminator. Any resulting RST is harmless now.
+	fmt.Printf("[houndify-sdk] response fully consumed, releasing EOF requestId=%s\n", voiceReq.RequestID)
 	bodyReader.ReleaseEOF()
 
 	bodyStr := line
@@ -332,10 +337,18 @@ func newAbortableReader(r io.Reader, holdEOF bool) *abortableReader {
 
 func (a *abortableReader) Read(p []byte) (int, error) {
 	n, err := a.reader.Read(p)
-	if err == io.EOF && a.holdEOF && a.safeToStopReceived.Load() {
-		// Audio is exhausted and the server already said it has enough audio.
-		// Keep the chunk stream open until the response is fully read.
-		<-a.responseComplete
+	if err == io.EOF {
+		if a.holdEOF && a.safeToStopReceived.Load() {
+			// Audio is exhausted and the server already said it has enough audio.
+			// Keep the chunk stream open until the response is fully read.
+			fmt.Println("[houndify-sdk] audio EOF received, holding until response is fully read")
+			<-a.responseComplete
+			fmt.Println("[houndify-sdk] audio EOF released, chunk terminator will be sent")
+		} else if a.holdEOF {
+			fmt.Println("[houndify-sdk] audio EOF received before SafeToStopAudio, passing through")
+		} else {
+			fmt.Println("[houndify-sdk] audio EOF received (no VAD), passing through")
+		}
 	}
 	return n, err
 }
@@ -356,6 +369,7 @@ func (a *abortableReader) MarkSafeToStop() {
 // Safe to call multiple times.
 func (a *abortableReader) ReleaseEOF() {
 	if a.released.CompareAndSwap(false, true) {
+		fmt.Printf("[houndify-sdk] ReleaseEOF called holdEOF=%v safeToStop=%v\n", a.holdEOF, a.safeToStopReceived.Load())
 		close(a.responseComplete)
 	}
 }
