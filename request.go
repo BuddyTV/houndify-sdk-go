@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -138,7 +137,7 @@ func BuildRequest(houndReq requestable, c Client) (*http.Request, error) {
 		if err != nil {
 			return nil, errors.New("failed to create request info: " + err.Error())
 		}
-		req.Body = ioutil.NopCloser(bytes.NewBuffer(requestInfoJSON))
+		req.Body = io.NopCloser(bytes.NewBuffer(requestInfoJSON))
 	}
 	return req, nil
 }
@@ -228,4 +227,9 @@ func (r *VoiceRequest) WithContext(ctx context.Context) {
 
 func (r *VoiceRequest) Headers(headers map[string]string) {
 	r.headers = headers
+}
+
+func (r *VoiceRequest) serverDeterminesEndOfAudio() bool {
+	serverEoa, ok := r.RequestInfoFields["ServerDeterminesEndOfAudio"].(bool)
+	return ok && serverEoa
 }
