@@ -180,9 +180,9 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 		req.Header.Set(k, v)
 	}
 
-	bodyReader := newAbortableReader(voiceReq.AudioStream)
+	bodyReader := newAbortableReader(voiceReq.AudioStream, voiceReq.serverDeterminesEndOfAudio())
 	req.Body = bodyReader
-	defer bodyReader.Abort()
+	defer bodyReader.ReleaseEOF()
 
 	if c.HttpClient == nil {
 		c.HttpClient = &http.Client{}
@@ -247,16 +247,9 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 			continue
 		}
 
-		// --- DEBUG ---
-		// Call hook to set reader delay and/or abort
-		jReader.updateState(&incoming) // essentially a hook/copy to allow normal Abort() call but retain sleep
-		// -------------
-
 		if incoming.Format == "HoundVoiceQueryPartialTranscript" || incoming.Format == "SoundHoundVoiceSearchParialTranscript" {
-			// Server says it has enough audio - stop the request body immediately
-			// to prevent writes on a connection the server is about to close.
-			if incoming.SafeToStopAudio != nil && *incoming.SafeToStopAudio && voiceReq.serverDeterminesEndOfAudio() {
-				bodyReader.Abort()
+			if incoming.SafeToStopAudio != nil && *incoming.SafeToStopAudio {
+				bodyReader.MarkSafeToStop()
 			}
 
 			// convert from houndify server's struct to SDK's simplified struct
@@ -277,12 +270,13 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 		}
 		if incoming.Format == "SoundHoundVoiceSearchResult" {
 			//this line is the final response, done with partial transcripts
-			if voiceReq.serverDeterminesEndOfAudio() {
-				bodyReader.Abort()
-			}
 			break
 		}
 	}
+
+	// Response fully consumed — release the held EOF so the writeLoop
+	// can send the chunk terminator. Any resulting RST is harmless now.
+	bodyReader.ReleaseEOF()
 
 	bodyStr := line
 
@@ -309,42 +303,61 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 	return bodyStr, nil
 }
 
-// abortableReader wraps an io.Reader so that Read() can be cut short.
-// Calling Abort() causes all subsequent Read() calls to return io.EOF,
-// signaling the HTTP transport to stop writing the request body.
+// abortableReader wraps an io.Reader and controls when the HTTP transport
+// sees EOF on the request body.
+//
+// When holdEOF is true (VAD / ServerDeterminesEndOfAudio) AND the server has
+// sent SafeToStopAudio, a real EOF from the underlying reader is held until
+// ReleaseEOF() is called. This lets the response be fully read before the
+// chunk terminator is sent, preventing the server-side RST from destroying
+// in-flight response data.
+//
+// If EOF arrives before SafeToStopAudio, it passes through immediately so the
+// server can process the complete audio and produce a response.
 type abortableReader struct {
-	reader io.Reader
-	done   atomic.Bool
+	reader             io.Reader
+	holdEOF            bool
+	safeToStopReceived atomic.Bool
+	responseComplete   chan struct{}
+	released           atomic.Bool
 }
 
-func newAbortableReader(r io.Reader) *abortableReader {
+func newAbortableReader(r io.Reader, holdEOF bool) *abortableReader {
 	return &abortableReader{
-		reader: r,
+		reader:           r,
+		holdEOF:          holdEOF,
+		responseComplete: make(chan struct{}),
 	}
 }
 
 func (a *abortableReader) Read(p []byte) (int, error) {
-	if a.done.Load() {
-		fmt.Println("abortableReader.Read() 1")
-		return 0, io.EOF
-	}
-
 	n, err := a.reader.Read(p)
-
-	if a.done.Load() {
-		fmt.Println("abortableReader.Read() 2")
-		return 0, io.EOF
+	if err == io.EOF && a.holdEOF && a.safeToStopReceived.Load() {
+		// Audio is exhausted and the server already said it has enough audio.
+		// Keep the chunk stream open until the response is fully read.
+		<-a.responseComplete
 	}
 	return n, err
 }
 
 func (a *abortableReader) Close() error {
-	a.Abort()
+	a.ReleaseEOF()
 	return nil
 }
 
-func (a *abortableReader) Abort() {
-	a.done.Store(true)
+// MarkSafeToStop records that the server sent SafeToStopAudio. If holdEOF is
+// enabled and a real EOF arrives after this point, Read() will block until
+// ReleaseEOF() is called.
+func (a *abortableReader) MarkSafeToStop() {
+	a.safeToStopReceived.Store(true)
+}
+
+// ReleaseEOF unblocks any Read() call that is holding a real EOF.
+// Safe to call multiple times.
+func (a *abortableReader) ReleaseEOF() {
+	if a.released.CompareAndSwap(false, true) {
+		close(a.responseComplete)
+	}
 }
 
 // jitterReader wraps an io.ReadCloser and adds a random sleep before each Read,
@@ -386,8 +399,8 @@ func (j *jitterReader) updateState(incoming *houndServerPartialTranscript) {
 		// Server says it has enough audio - stop the request body immediately
 		// to prevent writes on a connection the server is about to close.
 		if incoming.SafeToStopAudio != nil && *incoming.SafeToStopAudio && j.voiceReq.serverDeterminesEndOfAudio() {
-			j.bodyReader.Abort()
-			fmt.Println("-- DEBUG -- AudioReader aborted!")
+			j.bodyReader.ReleaseEOF()
+			fmt.Println("-- DEBUG -- AudioReader EOF released!")
 			j.sts.Store(true)
 		}
 	}
