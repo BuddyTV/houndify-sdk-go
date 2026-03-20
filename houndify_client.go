@@ -356,6 +356,11 @@ type jitterReader struct {
 func (j *jitterReader) Read(p []byte) (int, error) {
 	n, err := j.reader.Read(p)
 
+	// --- DEBUG ---
+	line := strings.TrimSpace(string(p))
+	fmt.Println(line)
+	// -------------
+
 	if j.sts.Load() {
 		jitter := rand.Int63n(int64(j.maxJitter))
 		fmt.Printf("-- DEBUG -- Adding artificial delay before processing STS partial response..  jitter=%d, maxJitter=%s\n", jitter, j.maxJitter)
