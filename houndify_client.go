@@ -5,12 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"math/rand"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"time"
 
 	"github.com/pkg/errors"
@@ -88,9 +89,6 @@ func (c *Client) SetConversationState(newState interface{}) {
 func (c *Client) TextSearch(textReq TextRequest) (string, error) {
 
 	req, err := BuildRequest(&textReq, *c)
-	if err != nil {
-		return "", err
-	}
 
 	// Add the TexRequest's context to the http request
 	if textReq.ctx != nil {
@@ -102,6 +100,10 @@ func (c *Client) TextSearch(textReq TextRequest) (string, error) {
 		req.Header.Set(k, v)
 	}
 
+	if err != nil {
+		return "", err
+	}
+
 	if c.HttpClient == nil {
 		c.HttpClient = &http.Client{}
 	}
@@ -110,7 +112,7 @@ func (c *Client) TextSearch(textReq TextRequest) (string, error) {
 		return "", errors.New("failed to successfully run request: " + err.Error())
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		return "", errors.New("failed to read body: " + err.Error())
 	}
@@ -151,25 +153,22 @@ func (c *Client) TextSearch(textReq TextRequest) (string, error) {
 // connect, failure to parse the response, or failure to update the conversation
 // state (if applicable).
 func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan PartialTranscript) (string, error) {
-	partialsTxChan := make(chan PartialTranscript, 10)
-	defer close(partialsTxChan)
 
-	// send partials to partialTranscriptChan and close when finished
-	go func() {
-		defer close(partialTranscriptChan)
-		for partial := range partialsTxChan {
-			partialTranscriptChan <- partial
-		}
+	//so the partial transcript channel doesn't get closed before all transcripts are sent
+	partialChanWait := sync.WaitGroup{}
+
+	defer func() {
+		go func() {
+			//don't close the open partial transcript channel
+			partialChanWait.Wait()
+			close(partialTranscriptChan)
+		}()
 	}()
 
 	// Ensure that RequestInfoInBody isn't set for VoiceRequests because the Audio stream
 	// has to go into the body
 	c.RequestInfoInBody = false
 	req, err := BuildRequest(&voiceReq, *c)
-	if err != nil {
-		return "", err
-	}
-
 	if voiceReq.ctx != nil {
 		req = req.WithContext(voiceReq.ctx)
 	}
@@ -179,9 +178,10 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 		req.Header.Set(k, v)
 	}
 
-	bodyReader := newAbortableReader(voiceReq.AudioStream)
-	req.Body = bodyReader
-	defer bodyReader.Abort()
+	if err != nil {
+		return "", err
+	}
+	req.Body = ioutil.NopCloser(voiceReq.AudioStream)
 
 	if c.HttpClient == nil {
 		c.HttpClient = &http.Client{}
@@ -192,7 +192,6 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 	if err != nil {
 		return "", errors.New("failed to successfully run request: " + err.Error())
 	}
-	defer resp.Body.Close()
 
 	if c.Verbose {
 		fmt.Println(resp.Proto, resp.StatusCode)
@@ -240,44 +239,37 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 			continue
 		}
 		if incoming.Format == "HoundVoiceQueryPartialTranscript" || incoming.Format == "SoundHoundVoiceSearchParialTranscript" {
-			// Server says it has enough audio - stop the request body immediately
-			// to prevent writes on a connection the server is about to close.
-			if incoming.SafeToStopAudio != nil && *incoming.SafeToStopAudio && voiceReq.serverDeterminesEndOfAudio() {
-				bodyReader.Abort()
-			}
-
 			// convert from houndify server's struct to SDK's simplified struct
 			partialDuration, err := time.ParseDuration(fmt.Sprintf("%d", incoming.DurationMS) + "ms")
 			if err != nil {
 				fmt.Println("failed reading the time in partial transcript")
 				continue
 			}
-
-			partialsTxChan <- PartialTranscript{
-				Message:         incoming.PartialTranscript,
-				Duration:        partialDuration,
-				Done:            incoming.Done,
-				SafeToStopAudio: incoming.SafeToStopAudio,
-			}
-
+			partialChanWait.Add(1)
+			go func() {
+				partialTranscriptChan <- PartialTranscript{
+					Message:         incoming.PartialTranscript,
+					Duration:        partialDuration,
+					Done:            incoming.Done,
+					SafeToStopAudio: incoming.SafeToStopAudio,
+				}
+				partialChanWait.Done()
+			}()
 			continue
 		}
 		if incoming.Format == "SoundHoundVoiceSearchResult" {
 			//this line is the final response, done with partial transcripts
-			if voiceReq.serverDeterminesEndOfAudio() {
-				bodyReader.Abort()
-			}
 			break
 		}
 	}
 
 	bodyStr := line
+	defer resp.Body.Close()
 
 	//don't try to parse out conversation state from a bad response
 	if resp.StatusCode >= 400 {
 		switch resp.StatusCode {
 		case http.StatusUnauthorized:
-			fallthrough
 		case http.StatusForbidden:
 			return bodyStr, errors.New("unauthorized")
 		default:
@@ -296,40 +288,6 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 	return bodyStr, nil
 }
 
-// abortableReader wraps an io.Reader so that Read() can be cut short.
-// Calling Abort() causes all subsequent Read() calls to return io.EOF,
-// signaling the HTTP transport to stop writing the request body.
-type abortableReader struct {
-	reader io.Reader
-	done   atomic.Bool
-}
-
-func newAbortableReader(r io.Reader) *abortableReader {
-	return &abortableReader{
-		reader: r,
-	}
-}
-
-func (a *abortableReader) Read(p []byte) (int, error) {
-	if a.done.Load() {
-		return 0, io.EOF
-	}
-	n, err := a.reader.Read(p)
-	if a.done.Load() {
-		return 0, io.EOF
-	}
-	return n, err
-}
-
-func (a *abortableReader) Close() error {
-	a.Abort()
-	return nil
-}
-
-func (a *abortableReader) Abort() {
-	a.done.Store(true)
-}
-
 // jitterReader wraps an io.ReadCloser and adds a random sleep before each Read,
 // used only for debugging to widen race windows.
 type jitterReader struct {
@@ -338,7 +296,10 @@ type jitterReader struct {
 }
 
 func (j *jitterReader) Read(p []byte) (int, error) {
-	time.Sleep(time.Duration(rand.Int63n(int64(j.maxJitter))))
+	jitter := rand.Int63n(int64(j.maxJitter))
+	fmt.Printf("-- DEBUG -- Adding artificial delay before processing partial response..  jitter=%d, maxJitter=%s\n", jitter, j.maxJitter)
+	time.Sleep(time.Duration(jitter))
+	fmt.Printf("-- DEBUG -- Done with artificial delay..  jitter=%d, maxJitter=%s\n", jitter, j.maxJitter)
 	return j.reader.Read(p)
 }
 
