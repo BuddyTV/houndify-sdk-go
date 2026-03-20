@@ -249,6 +249,11 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 			continue
 		}
 
+		// --- DEBUG ---
+		// Call hook to set reader delay and/or abort
+		jReader.updateState(&incoming) // essentially a hook/copy to allow normal Abort() call but retain sleep
+		// -------------
+
 		if incoming.Format == "HoundVoiceQueryPartialTranscript" || incoming.Format == "SoundHoundVoiceSearchParialTranscript" {
 			if incoming.SafeToStopAudio != nil && *incoming.SafeToStopAudio {
 				fmt.Printf("[houndify-sdk] SafeToStopAudio received requestId=%s\n", voiceReq.RequestID)
