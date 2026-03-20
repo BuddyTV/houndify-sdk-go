@@ -209,6 +209,7 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 				maxJitter:  time.Duration(ms) * time.Millisecond,
 				bodyReader: bodyReader,
 				voiceReq:   &voiceReq,
+				sts:        &atomic.Bool{},
 			}
 			resp.Body = jReader
 		}
