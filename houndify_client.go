@@ -267,12 +267,14 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 				continue
 			}
 
+			fmt.Printf("[houndify-sdk] push to partials - start requestId=%s\n", voiceReq.RequestID)
 			partialsTxChan <- PartialTranscript{
 				Message:         incoming.PartialTranscript,
 				Duration:        partialDuration,
 				Done:            incoming.Done,
 				SafeToStopAudio: incoming.SafeToStopAudio,
 			}
+			fmt.Printf("[houndify-sdk] push to partials - end requestId=%s\n", voiceReq.RequestID)
 
 			continue
 		}
@@ -415,11 +417,8 @@ func (j *jitterReader) Read(p []byte) (int, error) {
 func (j *jitterReader) updateState(incoming *houndServerPartialTranscript) {
 	fmt.Println("-- DEBUG -- updateState eval")
 	if incoming.Format == "HoundVoiceQueryPartialTranscript" || incoming.Format == "SoundHoundVoiceSearchParialTranscript" {
-		// Server says it has enough audio - stop the request body immediately
-		// to prevent writes on a connection the server is about to close.
 		if incoming.SafeToStopAudio != nil && *incoming.SafeToStopAudio && j.voiceReq.serverDeterminesEndOfAudio() {
-			j.bodyReader.ReleaseEOF()
-			fmt.Println("-- DEBUG -- AudioReader EOF released!")
+			fmt.Println("-- DEBUG -- SafeToStopAudio seen, enabling jitter delay")
 			j.sts.Store(true)
 		}
 	}
