@@ -344,7 +344,12 @@ type jitterReader struct {
 func (j *jitterReader) Read(p []byte) (int, error) {
 	n, err := j.reader.Read(p)
 	j.preprocessLine(p) // essentially a hook/copy to allow normal Abort() call but retain sleep
-	time.Sleep(time.Duration(rand.Int63n(int64(j.maxJitter))))
+
+	jitter := rand.Int63n(int64(j.maxJitter))
+	fmt.Printf("-- DEBUG -- Adding artificial delay before processing partial response..  jitter=%d, maxJitter=%s\n", jitter, j.maxJitter)
+	time.Sleep(time.Duration(jitter))
+	fmt.Printf("-- DEBUG -- Done with artificial delay..  jitter=%d, maxJitter=%s\n", jitter, j.maxJitter)
+
 	return n, err
 }
 
@@ -376,6 +381,7 @@ func (j *jitterReader) preprocessLine(bytes []byte) {
 		// to prevent writes on a connection the server is about to close.
 		if incoming.SafeToStopAudio != nil && *incoming.SafeToStopAudio && j.voiceReq.serverDeterminesEndOfAudio() {
 			j.bodyReader.Abort()
+			fmt.Println("-- DEBUG -- AudioReader aborted!")
 		}
 	}
 }
