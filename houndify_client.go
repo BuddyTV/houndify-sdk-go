@@ -343,12 +343,14 @@ type jitterReader struct {
 
 func (j *jitterReader) Read(p []byte) (int, error) {
 	n, err := j.reader.Read(p)
-	j.preprocessLine(p) // essentially a hook/copy to allow normal Abort() call but retain sleep
+	sts := j.preprocessLine(p) // essentially a hook/copy to allow normal Abort() call but retain sleep
 
-	jitter := rand.Int63n(int64(j.maxJitter))
-	fmt.Printf("-- DEBUG -- Adding artificial delay before processing partial response..  jitter=%d, maxJitter=%s\n", jitter, j.maxJitter)
-	time.Sleep(time.Duration(jitter))
-	fmt.Printf("-- DEBUG -- Done with artificial delay..  jitter=%d, maxJitter=%s\n", jitter, j.maxJitter)
+	if sts {
+		jitter := rand.Int63n(int64(j.maxJitter))
+		fmt.Printf("-- DEBUG -- Adding artificial delay before processing STS partial response..  jitter=%d, maxJitter=%s\n", jitter, j.maxJitter)
+		time.Sleep(time.Duration(jitter))
+		fmt.Printf("-- DEBUG -- Done with artificial delay..  jitter=%d, maxJitter=%s\n", jitter, j.maxJitter)
+	}
 
 	return n, err
 }
@@ -358,7 +360,8 @@ func (j *jitterReader) Read(p []byte) (int, error) {
 // To keep the real code above untouched, this func duplicates the same logic to determine
 // when to call Abort(), but the read delay is maintained as to allow the same race window
 // in the real response read loop
-func (j *jitterReader) preprocessLine(bytes []byte) {
+func (j *jitterReader) preprocessLine(bytes []byte) (sts bool) {
+	sts = false
 	if len(bytes) == 0 {
 		return
 	}
@@ -367,6 +370,7 @@ func (j *jitterReader) preprocessLine(bytes []byte) {
 	if line == "" {
 		return
 	}
+	fmt.Println(line)
 	if _, convertErr := strconv.Atoi(line); convertErr == nil {
 		// this is an integer, so one of the ObjectByteCountPrefixes, skip it
 		return
@@ -376,12 +380,14 @@ func (j *jitterReader) preprocessLine(bytes []byte) {
 	if err := json.Unmarshal([]byte(line), &incoming); err != nil {
 		return
 	}
+	fmt.Println("-- DEBUG -- preprocessLine eval")
 	if incoming.Format == "HoundVoiceQueryPartialTranscript" || incoming.Format == "SoundHoundVoiceSearchParialTranscript" {
 		// Server says it has enough audio - stop the request body immediately
 		// to prevent writes on a connection the server is about to close.
 		if incoming.SafeToStopAudio != nil && *incoming.SafeToStopAudio && j.voiceReq.serverDeterminesEndOfAudio() {
 			j.bodyReader.Abort()
 			fmt.Println("-- DEBUG -- AudioReader aborted!")
+			sts = true
 		}
 	}
 }
