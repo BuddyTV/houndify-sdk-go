@@ -390,6 +390,7 @@ func (j *jitterReader) preprocessLine(bytes []byte) (sts bool) {
 			sts = true
 		}
 	}
+	return
 }
 
 func (j *jitterReader) Close() error {
