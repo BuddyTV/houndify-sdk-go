@@ -151,6 +151,7 @@ func (c *Client) TextSearch(textReq TextRequest) (string, error) {
 // connect, failure to parse the response, or failure to update the conversation
 // state (if applicable).
 func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan PartialTranscript) (string, error) {
+	fmt.Println("-- DEBUG jitter -- 1 --")
 	partialsTxChan := make(chan PartialTranscript, 10)
 	defer close(partialsTxChan)
 
