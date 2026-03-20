@@ -325,10 +325,14 @@ func newAbortableReader(r io.Reader) *abortableReader {
 
 func (a *abortableReader) Read(p []byte) (int, error) {
 	if a.done.Load() {
+		fmt.Println("abortableReader.Read() 1")
 		return 0, io.EOF
 	}
+
 	n, err := a.reader.Read(p)
+
 	if a.done.Load() {
+		fmt.Println("abortableReader.Read() 2")
 		return 0, io.EOF
 	}
 	return n, err
