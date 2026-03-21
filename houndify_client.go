@@ -181,7 +181,7 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 		req.Header.Set(k, v)
 	}
 
-	bodyReader := newAbortableReader(voiceReq.AudioStream, vad)
+	bodyReader := newDeferredEOFReader(voiceReq.AudioStream, vad)
 	req.Body = bodyReader
 	defer bodyReader.ReleaseEOF()
 
@@ -315,7 +315,7 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 	return bodyStr, nil
 }
 
-// abortableReader wraps an io.Reader and controls when the HTTP transport
+// deferredEOFReader wraps an io.Reader and controls when the HTTP transport
 // sees EOF on the request body.
 //
 // When holdEOF is true (VAD / ServerDeterminesEndOfAudio) AND the server has
@@ -326,7 +326,7 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 //
 // If EOF arrives before SafeToStopAudio, it passes through immediately so the
 // server can process the complete audio and produce a response.
-type abortableReader struct {
+type deferredEOFReader struct {
 	reader             io.Reader
 	holdEOF            bool
 	safeToStopReceived atomic.Bool
@@ -334,15 +334,15 @@ type abortableReader struct {
 	released           atomic.Bool
 }
 
-func newAbortableReader(r io.Reader, holdEOF bool) *abortableReader {
-	return &abortableReader{
+func newDeferredEOFReader(r io.Reader, holdEOF bool) *deferredEOFReader {
+	return &deferredEOFReader{
 		reader:           r,
 		holdEOF:          holdEOF,
 		responseComplete: make(chan struct{}),
 	}
 }
 
-func (a *abortableReader) Read(p []byte) (int, error) {
+func (a *deferredEOFReader) Read(p []byte) (int, error) {
 	n, err := a.reader.Read(p)
 	if err == io.EOF {
 		if a.holdEOF && a.safeToStopReceived.Load() {
@@ -360,21 +360,20 @@ func (a *abortableReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-func (a *abortableReader) Close() error {
-	a.ReleaseEOF()
+func (a *deferredEOFReader) Close() error {
 	return nil
 }
 
 // MarkSafeToStop records that the server sent SafeToStopAudio. If holdEOF is
 // enabled and a real EOF arrives after this point, Read() will block until
 // ReleaseEOF() is called.
-func (a *abortableReader) MarkSafeToStop() {
+func (a *deferredEOFReader) MarkSafeToStop() {
 	a.safeToStopReceived.Store(true)
 }
 
 // ReleaseEOF unblocks any Read() call that is holding a real EOF.
 // Safe to call multiple times.
-func (a *abortableReader) ReleaseEOF() {
+func (a *deferredEOFReader) ReleaseEOF() {
 	if a.released.CompareAndSwap(false, true) {
 		fmt.Printf("[houndify-sdk] ReleaseEOF called holdEOF=%v safeToStop=%v\n", a.holdEOF, a.safeToStopReceived.Load())
 		close(a.responseComplete)
@@ -386,7 +385,7 @@ func (a *abortableReader) ReleaseEOF() {
 type jitterReader struct {
 	reader     io.ReadCloser
 	maxJitter  time.Duration
-	bodyReader *abortableReader
+	bodyReader *deferredEOFReader
 	voiceReq   *VoiceRequest
 	sts        *atomic.Bool
 }
