@@ -248,7 +248,7 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 		}
 		if incoming.Format == "HoundVoiceQueryPartialTranscript" || incoming.Format == "SoundHoundVoiceSearchParialTranscript" {
 			fmt.Printf("[houndify-sdk] PARTIAL requestId=%s transcript=%q safeToStop=%v time=%s\n",
-				voiceReq.RequestID, incoming.PartialTranscript, incoming.SafeToStopAudio, time.Now().Format(time.StampMicro))
+				voiceReq.RequestID, incoming.PartialTranscript, *incoming.SafeToStopAudio, time.Now().Format(time.StampMicro))
 			// convert from houndify server's struct to SDK's simplified struct
 			partialDuration, err := time.ParseDuration(fmt.Sprintf("%d", incoming.DurationMS) + "ms")
 			if err != nil {
