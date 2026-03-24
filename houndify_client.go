@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
-	"math/rand"
 	"net/http"
 	"os"
 	"strconv"
@@ -181,7 +180,10 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 	if err != nil {
 		return "", err
 	}
-	req.Body = ioutil.NopCloser(voiceReq.AudioStream)
+	req.Body = ioutil.NopCloser(&debugAudioReader{
+		reader:    voiceReq.AudioStream,
+		requestID: voiceReq.RequestID,
+	})
 
 	if c.HttpClient == nil {
 		c.HttpClient = &http.Client{}
@@ -193,6 +195,9 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 		return "", errors.New("failed to successfully run request: " + err.Error())
 	}
 
+	fmt.Printf("[houndify-sdk] RESPONSE STREAM OPEN requestId=%s status=%d time=%s\n",
+		voiceReq.RequestID, resp.StatusCode, time.Now().Format(time.StampMicro))
+
 	if c.Verbose {
 		fmt.Println(resp.Proto, resp.StatusCode)
 		fmt.Println("Headers: ", resp.Header)
@@ -202,8 +207,8 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 	if jitterStr := os.Getenv("DEBUG_RESPONSE_JITTER_MS"); jitterStr != "" {
 		if ms, err := strconv.Atoi(jitterStr); err == nil && ms > 0 {
 			resp.Body = &jitterReader{
-				reader:    resp.Body,
-				maxJitter: time.Duration(ms) * time.Millisecond,
+				reader: resp.Body,
+				jitter: time.Duration(ms) * time.Millisecond,
 			}
 		}
 	}
@@ -219,10 +224,13 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 		}
 		if err != nil {
 			if err != io.EOF {
-				fmt.Println(err)
+				fmt.Printf("[houndify-sdk] RESPONSE READ ERROR requestId=%s err=%v errType=%T time=%s\n",
+					voiceReq.RequestID, err, err, time.Now().Format(time.StampMicro))
 				return "", errors.New("error reading Houndify server response")
 			}
 			//EOF means this line must be the final response, done with partial transcripts
+			fmt.Printf("[houndify-sdk] RESPONSE EOF requestId=%s time=%s\n",
+				voiceReq.RequestID, time.Now().Format(time.StampMicro))
 			break
 		}
 		if line == "" {
@@ -239,6 +247,8 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 			continue
 		}
 		if incoming.Format == "HoundVoiceQueryPartialTranscript" || incoming.Format == "SoundHoundVoiceSearchParialTranscript" {
+			fmt.Printf("[houndify-sdk] PARTIAL requestId=%s transcript=%q safeToStop=%v time=%s\n",
+				voiceReq.RequestID, incoming.PartialTranscript, incoming.SafeToStopAudio, time.Now().Format(time.StampMicro))
 			// convert from houndify server's struct to SDK's simplified struct
 			partialDuration, err := time.ParseDuration(fmt.Sprintf("%d", incoming.DurationMS) + "ms")
 			if err != nil {
@@ -258,6 +268,8 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 			continue
 		}
 		if incoming.Format == "SoundHoundVoiceSearchResult" {
+			fmt.Printf("[houndify-sdk] FINAL RESPONSE requestId=%s lineLen=%d time=%s\n",
+				voiceReq.RequestID, len(line), time.Now().Format(time.StampMicro))
 			//this line is the final response, done with partial transcripts
 			break
 		}
@@ -285,22 +297,53 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 		c.conversationState = newConvState
 	}
 
+	fmt.Printf("[houndify-sdk] VOICESEARCH COMPLETE requestId=%s bodyLen=%d time=%s\n",
+		voiceReq.RequestID, len(bodyStr), time.Now().Format(time.StampMicro))
+
 	return bodyStr, nil
+}
+
+// debugAudioReader wraps an io.Reader to log audio read activity for the HTTP
+// transport's writeLoop. This lets us see whether audio is still being sent
+// after SafeToStopAudio and correlate timestamps with response reads.
+type debugAudioReader struct {
+	reader    io.Reader
+	requestID string
+	total     int64
+	reads     int
+}
+
+func (d *debugAudioReader) Read(p []byte) (int, error) {
+	n, err := d.reader.Read(p)
+	d.total += int64(n)
+	d.reads++
+	if err == io.EOF {
+		fmt.Printf("[houndify-sdk] AUDIO READ EOF requestId=%s reads=%d totalBytes=%d time=%s\n",
+			d.requestID, d.reads, d.total, time.Now().Format(time.StampMicro))
+	} else if err != nil {
+		fmt.Printf("[houndify-sdk] AUDIO READ ERROR requestId=%s reads=%d totalBytes=%d err=%v time=%s\n",
+			d.requestID, d.reads, d.total, err, time.Now().Format(time.StampMicro))
+	} else if d.reads%50 == 0 {
+		fmt.Printf("[houndify-sdk] AUDIO READ requestId=%s reads=%d totalBytes=%d n=%d time=%s\n",
+			d.requestID, d.reads, d.total, n, time.Now().Format(time.StampMicro))
+	}
+	return n, err
 }
 
 // jitterReader wraps an io.ReadCloser and adds a random sleep before each Read,
 // used only for debugging to widen race windows.
 type jitterReader struct {
-	reader    io.ReadCloser
-	maxJitter time.Duration
+	reader io.ReadCloser
+	jitter time.Duration
 }
 
 func (j *jitterReader) Read(p []byte) (int, error) {
-	jitter := rand.Int63n(int64(j.maxJitter))
-	fmt.Printf("-- DEBUG -- Adding artificial delay before processing partial response..  jitter=%d, maxJitter=%s\n", jitter, j.maxJitter)
-	time.Sleep(time.Duration(jitter))
-	fmt.Printf("-- DEBUG -- Done with artificial delay..  jitter=%d, maxJitter=%s\n", jitter, j.maxJitter)
-	return j.reader.Read(p)
+	t0 := time.Now()
+	fmt.Printf("[houndify-sdk] JITTER READ start --> delay=%s readTime=%s time=%s\n", j.jitter, time.Since(t0), time.Now().Format(time.StampMicro))
+	time.Sleep(j.jitter)
+	n, err := j.reader.Read(p)
+	fmt.Printf("[houndify-sdk] JITTER READ end <-- n=%d err=%v delay=%s readTime=%s time=%s\n", n, err, j.jitter, time.Since(t0), time.Now().Format(time.StampMicro))
+	return n, err
 }
 
 func (j *jitterReader) Close() error {
