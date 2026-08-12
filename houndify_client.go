@@ -126,7 +126,7 @@ func (c *Client) TextSearch(textReq TextRequest) (string, error) {
 
 	//don't try to parse out conversation state from a bad response
 	if resp.StatusCode >= 400 {
-		return bodyStr, errors.New("error response")
+		return bodyStr, errors.Errorf("error response (status code: %d)", resp.StatusCode)
 	}
 	// update with new conversation state
 	if c.enableConversationState {
@@ -298,9 +298,9 @@ func (c *Client) VoiceSearch(voiceReq VoiceRequest, partialTranscriptChan chan P
 		case http.StatusUnauthorized:
 			fallthrough
 		case http.StatusForbidden:
-			return bodyStr, errors.New("unauthorized")
+			return bodyStr, errors.Errorf("unauthorized (status code: %d)", resp.StatusCode)
 		default:
-			return bodyStr, errors.New("error response")
+			return bodyStr, errors.Errorf("error response (status code: %d)", resp.StatusCode)
 		}
 	}
 	// update with new conversation state
