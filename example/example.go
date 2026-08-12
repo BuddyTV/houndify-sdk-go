@@ -8,16 +8,16 @@ import (
 	"crypto/tls"
 	"flag"
 	"fmt"
+	"github.com/go-audio/wav"
+	houndify "github.com/soundhound/houndify-sdk-go"
 	"io"
+	"io/ioutil"
 	"log"
 	"net/http/httptrace"
 	"net/textproto"
 	"os"
 	"strings"
 	"time"
-
-	"github.com/go-audio/wav"
-	houndify "github.com/soundhound/houndify-sdk-go"
 )
 
 const (
@@ -78,7 +78,7 @@ func main() {
 	case *voiceFlag != "" && !*streamFlag:
 		// voice query
 		audioFilePath := *voiceFlag
-		fileContents, err := os.ReadFile(audioFilePath)
+		fileContents, err := ioutil.ReadFile(audioFilePath)
 		if err != nil {
 			log.Fatalf("failed to read contents of file %q, err: %v", audioFilePath, err)
 		}
@@ -284,7 +284,7 @@ func derefOrFetchFromEnv(strPtr *string, envKey string) string {
 }
 
 func getDefaultClientTrace() *httptrace.ClientTrace {
-	traceLogger := log.New(os.Stdout, "[httptrace] ", log.Ltime|log.Lmicroseconds)
+	traceLogger := log.New(os.Stdout, "[httptrace] ", log.Ltime | log.Lmicroseconds)
 	trace := &httptrace.ClientTrace{
 		GotConn: func(info httptrace.GotConnInfo) {
 			traceLogger.Println("GotConn: ", info)
